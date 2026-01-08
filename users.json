@@ -1,0 +1,65 @@
+{
+  "1897652450": {
+    "plan": "unlimited",
+    "subscription_end": "2125-12-04T10:28:50.342964",
+    "usage_date": "2026-01-08",
+    "usage_count": 10,
+    "referral_count": 0,
+    "username": null,
+    "language": null,
+    "blocked": false,
+    "image_usage_count": 2
+  },
+  "8033930450": {
+    "plan": "unlimited",
+    "subscription_end": "2125-12-04T10:27:23.153557",
+    "usage_date": "2025-12-28",
+    "usage_count": 1,
+    "referral_count": 0,
+    "username": null,
+    "language": null,
+    "blocked": true
+  },
+  "8572616525": {
+    "plan": "free",
+    "subscription_end": null,
+    "usage_date": "2025-12-28",
+    "usage_count": 6,
+    "referral_count": 0,
+    "username": null,
+    "language": null
+  },
+  "8348804595": {
+    "plan": "pro",
+    "subscription_end": "2026-02-05T16:56:54.183618",
+    "usage_date": "2026-01-05",
+    "usage_count": 0,
+    "referral_count": 0,
+    "username": null,
+    "language": null,
+    "blocked": false,
+    "image_usage_count": 0
+  },
+  "858850025": {
+    "plan": "free",
+    "subscription_end": null,
+    "usage_date": "2026-01-04",
+    "usage_count": 4,
+    "referral_count": 0,
+    "username": null,
+    "language": null,
+    "blocked": false,
+    "custom_limit": 1000
+  },
+  "7518385809": {
+    "plan": "free",
+    "subscription_end": null,
+    "usage_date": "2026-01-06",
+    "usage_count": 0,
+    "image_usage_count": 2,
+    "referral_count": 0,
+    "username": null,
+    "language": null,
+    "blocked": false
+  }
+}

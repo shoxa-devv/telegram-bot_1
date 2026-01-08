@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+
+from aiogram import F, Router, types
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from bot.i18n import get_text
+from bot.keyboards.inline import (
+    main_menu_keyboard,
+    subscription_keyboard,
+    language_select_keyboard,
+)
+from bot.state_store import USER_STATES, user_languages
+from bot.utils import check_subscription, detect_language, normalize_channel
+from data.constants import CHANNELS
+from data.history import append_history
+from data.users import user_manager
+from services.openai_service import chatgpt_text, text_to_image
+
+router = Router()
+
+
+@router.message(F.command("start") | (F.text & F.text.startswith("/start")))
+async def start(message: types.Message):
+    """Handle /start command - immediately show main menu and clear all states."""
+    user_id = message.from_user.id
+
+    # Clear all states when /start is called - always return to main menu
+    if user_id in USER_STATES:
+        del USER_STATES[user_id]
+
+    # Get command text for referral support
+    text = message.text or ""
+    if message.entities:
+        # If it's a command entity, extract the text
+        for entity in message.entities:
+            if entity.type == "bot_command":
+                text = message.text or ""
+
+    # Referral support: /start <referrer_id>
+    args = text.split()
+    if len(args) > 1 and args[1].isdigit():
+        referrer_id = int(args[1])
+        if referrer_id != user_id and user_manager.is_new_user(user_id):
+            if user_manager.add_referral(user_id, referrer_id):
+                try:
+                    await message.bot.send_message(referrer_id, get_text(referrer_id, "referral_new"))
+                except Exception:
+                    pass
+
+    if user_manager.is_blocked(user_id):
+        await message.answer(get_text(user_id, "blocked_msg"))
+        return
+
+    # Inform about inviter (legacy behavior) - send in background, don't wait
+    curr_user = user_manager.get_user(user_id)
+    r_id = curr_user.get("referred_by")
+    if r_id:
+        # Don't block main menu for this
+        try:
+            await message.answer(get_text(user_id, "invited_by").format(referrer_id=r_id))
+        except Exception:
+            pass
+
+    # Check subscription first
+    if not await check_subscription(message.bot, user_id):
+        await message.answer(
+            f"{get_text(user_id, 'welcome')}\n\n"
+            f"{get_text(user_id, 'subscribe_msg')}\n"
+            f"{chr(10).join(CHANNELS)}\n\n"
+            f"{get_text(user_id, 'subscribe_after')}",
+            reply_markup=subscription_keyboard(user_id),
+        )
+        return
+
+    # /start should always return to main menu immediately.
+    # Ensure a language exists; default to "uz" if missing.
+    lang = user_languages.get(user_id) or user_manager.get_language(user_id) or "uz"
+    user_languages[user_id] = lang
+    try:
+        user_manager.set_language(user_id, lang)
+    except Exception:
+        pass
+
+    # Immediately send main menu with keyboard - NO "thinking" message
+    welcome_text = get_text(user_id, "welcome")
+    features_text = get_text(user_id, "bot_features")
+    menu_kb = main_menu_keyboard(user_id)
+    
+    # Ensure keyboard is created
+    if menu_kb is None:
+        # Fallback: create simple keyboard if main_menu_keyboard failed
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        fallback_kb = InlineKeyboardBuilder()
+        fallback_kb.button(text=get_text(user_id, "profile"), callback_data="menu_profile")
+        fallback_kb.button(text=get_text(user_id, "history"), callback_data="menu_history")
+        fallback_kb.adjust(2)
+        menu_kb = fallback_kb.as_markup()
+    
+    # Send immediately without any delay or "thinking" message
+    await message.answer(
+        f"{welcome_text}\n\n{features_text}",
+        reply_markup=menu_kb,
+    )
+
+
+@router.message(F.text.regexp(r"^/restart"))
+async def restart(message: types.Message):
+    user_id = message.from_user.id
+
+    if user_manager.is_blocked(user_id):
+        await message.answer(get_text(user_id, "blocked_msg"))
+        return
+
+    if user_id in user_languages:
+        del user_languages[user_id]
+
+    await message.answer(get_text(user_id, "restart_success"))
+
+    if not await check_subscription(message.bot, user_id):
+        await message.answer(
+            f"{get_text(user_id, 'welcome')}\n\n"
+            f"{get_text(user_id, 'subscribe_msg')}\n"
+            f"{chr(10).join(CHANNELS)}\n\n"
+            f"{get_text(user_id, 'subscribe_after')}",
+            reply_markup=subscription_keyboard(user_id),
+        )
+        return
+
+    await message.answer(
+        f"{get_text(user_id, 'welcome')}\n\n{get_text(user_id, 'bot_features')}",
+        reply_markup=main_menu_keyboard(user_id),
+    )
+
+
+@router.message(F.text.regexp(r"^/help$"))
+async def help_command(message: types.Message):
+    """Handle /help command in private chats - show help text"""
+    user_id = message.from_user.id
+    
+    # Only work in private chats (groups will be handled by group_help_handler)
+    if message.chat.type in ["group", "supergroup"]:
+        return
+    
+    # Private chat: show help text
+    await message.answer(get_text(user_id, "help_command"), parse_mode="Markdown")
+
+
+@router.message(F.text.regexp(r"^/help(\s|$)"))
+async def group_help_handler(message: types.Message):
+    """Handle /help command in groups - works for all users"""
+    # Only work in groups/supergroups
+    if message.chat.type not in ["group", "supergroup"]:
+        return
+    
+    user_id = message.from_user.id
+    
+    # Check if user is blocked
+    if user_manager.is_blocked(user_id):
+        return
+    
+    # Extract prompt from command
+    parts = (message.text or "").split(" ", 1)
+    prompt = parts[1] if len(parts) > 1 else ""
+    
+    # If no prompt provided, show usage message
+    if not prompt or not prompt.strip():
+        await message.reply("💬 Savol yozing: /help Savolingiz\n\nMisol: /help Python nima?")
+        return
+    
+    prompt = prompt.strip()
+    
+    # Check user limit
+    if not user_manager.check_limit(user_id):
+        await message.reply(get_text(user_id, "limit_reached"))
+        return
+    
+    user_manager.increment_usage(user_id)
+    
+    # Detect or get user language
+    user_lang = user_languages.get(user_id)
+    if not user_lang:
+        user_lang = detect_language(prompt)
+        user_languages[user_id] = user_lang
+    
+    # Show thinking message
+    first_msg = await message.reply(get_text(user_id, "thinking"))
+    
+    try:
+        # Generate response
+        response = await asyncio.to_thread(chatgpt_text, user_id, prompt, user_lang)
+        await first_msg.delete()
+        
+        # Reply in the group
+        await message.reply(response)
+        
+        # Save to history
+        append_history(
+            user_id,
+            {
+                "ts": datetime.utcnow().isoformat(),
+                "type": "text",
+                "prompt": prompt,
+                "response": response,
+                "role": "Assistant",
+                "chat_type": "group",
+                "chat_id": message.chat.id,
+            },
+        )
+    except Exception as e:
+        await first_msg.delete()
+        await message.reply(f"❌ Xatolik: {str(e)}")
+
+
+@router.message(F.text.regexp(r"^/image"))
+async def image_command(message: types.Message):
+    user_id = message.from_user.id
+
+    if user_manager.is_blocked(user_id):
+        await message.answer(get_text(user_id, "blocked_msg"))
+        return
+
+    if not await check_subscription(message.bot, user_id):
+        await message.answer(
+            f"{get_text(user_id, 'subscribe_msg')}\n" + "\n".join([normalize_channel(ch) for ch in CHANNELS]),
+            reply_markup=subscription_keyboard(user_id),
+        )
+        return
+
+    if not user_manager.check_limit(user_id):
+        kb = InlineKeyboardBuilder()
+        kb.button(text=get_text(user_id, "buy_premium"), callback_data="menu_premium")
+        await message.answer(get_text(user_id, "limit_reached"), reply_markup=kb.as_markup())
+        return
+    user_manager.increment_usage(user_id)
+
+    parts = (message.text or "").split(" ", 1)
+    prompt = parts[1] if len(parts) > 1 else ""
+    if not prompt:
+        await message.answer(get_text(user_id, "image_help"))
+        return
+
+    first_msg = await message.bot.send_message(message.chat.id, get_text(user_id, "thinking"))
+    try:
+        image_url = await asyncio.to_thread(text_to_image, prompt)
+        await first_msg.delete()
+        await message.bot.send_photo(message.chat.id, image_url, caption=None)
+        append_history(
+            user_id,
+            {"ts": datetime.utcnow().isoformat(), "type": "image", "prompt": prompt, "response": image_url, "role": "Assistant"},
+        )
+    except Exception as e:
+        await first_msg.delete()
+        await message.bot.send_message(message.chat.id, f"Xatolik: {str(e)}")
+

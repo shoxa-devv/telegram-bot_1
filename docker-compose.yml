@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    container_name: chatgpt_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./voices:/app/voices
+      - ./history.json:/app/history.json
+    environment:
+      - PYTHONUNBUFFERED=1
